@@ -24,6 +24,10 @@ LOG_FILE="$OUTPUT_DIR/crop_bot.log"
 
 # NEW: Skip files that are already cropped (avoid duplicates)
 SKIP_ALREADY_CROPPED=true
+
+# NEW: Delete original files after successful cropping
+DELETE_ORIGINALS=false  # Set to true to auto-delete originals
+DELETE_CONFIRMATION=true  # Ask before deleting (safety!)
 # =======================
 
 # Color codes for pretty output
@@ -60,6 +64,52 @@ is_already_cropped() {
     return 0  # true - already exists
   fi
   return 1  # false - not cropped yet
+}
+
+# NEW: Safely delete original file after cropping
+delete_original() {
+  local original_file="$1"
+  local cropped_file="$2"
+  
+  # Safety check: Only delete if cropped file exists and is valid
+  if [ ! -f "$cropped_file" ]; then
+    echo -e "${RED}⚠ Skipping delete: Cropped file doesn't exist${NC}"
+    log_message "DELETE SKIPPED: Cropped file missing - $cropped_file"
+    return 1
+  fi
+  
+  # Check cropped file size (should be > 0 bytes)
+  if [ ! -s "$cropped_file" ]; then
+    echo -e "${RED}⚠ Skipping delete: Cropped file is empty${NC}"
+    log_message "DELETE SKIPPED: Cropped file empty - $cropped_file"
+    return 1
+  fi
+  
+  # Delete the original
+  if rm "$original_file" 2>/dev/null; then
+    echo -e "${GREEN}🗑️  Deleted original: $(basename "$original_file")${NC}"
+    log_message "DELETED: $original_file"
+    return 0
+  else
+    echo -e "${RED}⚠ Failed to delete: $(basename "$original_file")${NC}"
+    log_message "DELETE FAILED: $original_file"
+    return 1
+  fi
+}
+
+# NEW: Ask user for confirmation before deleting
+ask_delete_confirmation() {
+  echo -e "${YELLOW}⚠ WARNING: This will DELETE original files after cropping!${NC}"
+  echo -e "${YELLOW}   Deleted files CANNOT be recovered!${NC}"
+  echo ""
+  read -p "Are you sure you want to delete originals? (type YES to confirm): " response
+  
+  if [ "$response" = "YES" ]; then
+    return 0  # User confirmed
+  else
+    echo -e "${BLUE}✓ Keeping original files safe${NC}"
+    return 1  # User cancelled
+  fi
 }
 
 # Crop a single file with error handling
@@ -109,6 +159,7 @@ ${GREEN}CURRENT SETTINGS:${NC}
   Crop area:     $CROP_AREA
   Gravity mode:  $GRAVITY_MODE
   Log file:      $LOG_FILE
+  Delete originals: $DELETE_ORIGINALS
 
 ${GREEN}EXAMPLES:${NC}
   # Test your crop settings first:
@@ -121,6 +172,13 @@ ${GREEN}EXAMPLES:${NC}
   $0 watch &
 
 ${YELLOW}TIP:${NC} Always run 'preview' first to check your crop settings!
+
+${RED}DANGER ZONE:${NC}
+  To enable auto-delete of originals, edit the script and set:
+    DELETE_ORIGINALS=true
+  
+  This will permanently delete original files after cropping!
+  Use with caution - deleted files cannot be recovered.
 EOF
 }
 
@@ -162,10 +220,26 @@ if [ "$1" = "batch" ]; then
   echo -e "${BLUE}=== Batch Mode ===${NC}"
   echo "Processing all images in $INPUT_DIR..."
   
+  # Ask for confirmation if delete is enabled
+  should_delete=false
+  if [ "$DELETE_ORIGINALS" = true ]; then
+    if [ "$DELETE_CONFIRMATION" = true ]; then
+      if ask_delete_confirmation; then
+        should_delete=true
+      fi
+    else
+      should_delete=true
+      echo -e "${YELLOW}⚠ DELETE_ORIGINALS is enabled - originals will be deleted!${NC}"
+    fi
+  fi
+  
+  echo ""
+  
   shopt -s nullglob
   count=0
   skipped=0
   failed=0
+  deleted=0
   
   for img in "$INPUT_DIR"/*.{png,jpg,jpeg,PNG,JPG,JPEG}; do
     filename=$(basename "$img")
@@ -182,6 +256,13 @@ if [ "$1" = "batch" ]; then
     if crop_file "$img" "$out"; then
       echo -e "${GREEN}✓ Cropped: $filename${NC}"
       count=$((count+1))
+      
+      # Delete original if enabled
+      if [ "$should_delete" = true ]; then
+        if delete_original "$img" "$out"; then
+          deleted=$((deleted+1))
+        fi
+      fi
     else
       failed=$((failed+1))
     fi
@@ -193,6 +274,9 @@ if [ "$1" = "batch" ]; then
   echo -e "⊙ Skipped: ${YELLOW}$skipped${NC} files"
   if [ $failed -gt 0 ]; then
     echo -e "✗ Failed:  ${RED}$failed${NC} files"
+  fi
+  if [ $deleted -gt 0 ]; then
+    echo -e "🗑️  Deleted: ${BLUE}$deleted${NC} originals"
   fi
   echo -e "Output: $OUTPUT_DIR"
   
@@ -213,9 +297,15 @@ if [ "$1" = "watch" ]; then
   echo -e "${BLUE}=== Watch Mode ===${NC}"
   echo -e "${GREEN}👀 Watching $INPUT_DIR for new images...${NC}"
   echo -e "${YELLOW}Press Ctrl+C to stop${NC}"
+  
+  # Show delete status
+  if [ "$DELETE_ORIGINALS" = true ]; then
+    echo -e "${YELLOW}⚠ DELETE MODE ACTIVE: Originals will be deleted after cropping${NC}"
+  fi
+  
   echo ""
   
-  log_message "Watch mode started"
+  log_message "Watch mode started (DELETE_ORIGINALS=$DELETE_ORIGINALS)"
   
   inotifywait -m "$INPUT_DIR" -e create,moved_to --format "%f" 2>/dev/null |
   while read file; do
@@ -236,6 +326,11 @@ if [ "$1" = "watch" ]; then
         
         if crop_file "$src" "$dst"; then
           echo -e "${GREEN}✓ Auto-cropped: $file${NC}"
+          
+          # Delete original if enabled
+          if [ "$DELETE_ORIGINALS" = true ]; then
+            delete_original "$src" "$dst"
+          fi
         else
           echo -e "${RED}✗ Failed to crop: $file${NC}"
         fi
