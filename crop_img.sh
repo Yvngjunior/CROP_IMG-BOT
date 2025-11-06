@@ -72,7 +72,7 @@ if [ "$1" = "watch" ]; then
     # simple check for extension
     case "$file" in
       *.png|*.jpg|*.jpeg|*.PNG|*.JPG|*.JPEG)
-        sleep 0.5  # wait a little to ensure file is fully written
+        sleep 1.5  # wait a little to ensure file is fully written
         src="$INPUT_DIR/$file"
         dst="$OUTPUT_DIR/$file"
         echo "New file detected: $file"
